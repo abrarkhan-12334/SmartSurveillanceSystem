@@ -1,74 +1,102 @@
-import cv2
 import time
-from ultralytics import YOLO
+import cv2
+import streamlit as st
+
+import config
+from modules.camera import Camera
+from modules.object_detection import ObjectDetector
+from modules.event_manager import EventManager
+from modules.restricted_zone import RestrictedZone, parse_points
+
+st.set_page_config(page_title="Smart Surveillance System", layout="wide")
+st.title("Smart Surveillance System")
 
 
-def main():
-    print("Loading AI model...")
+@st.cache_resource
+def load_detector():
+    return ObjectDetector("yolo11n.pt")
 
-    # Load a lightweight object detection model
-    model = YOLO("yolo11n.pt")
 
-    # Open the laptop webcam
-    camera = cv2.VideoCapture(0)
+@st.cache_resource
+def load_events():
+    return EventManager("cam1")
 
-    if not camera.isOpened():
-        print("ERROR: Could not open camera.")
-        return
 
-    print("Smart Surveillance System started!")
-    print("Press Q to exit.")
+# ---------- Sidebar ----------
+source = st.sidebar.text_input("Source (0 = webcam, or video path / RTSP URL)", "0")
+conf = st.sidebar.slider("Confidence", 0.1, 0.9, 0.4, 0.05)
 
-    previous_time = time.time()
-
+st.sidebar.markdown("---")
+zone_on = st.sidebar.checkbox("Enable restricted zone", value=True)
+zone_text = st.sidebar.text_area("Zone points (x,y; x,y; ...)", config.DEFAULT_ZONE)
+zone = None
+if zone_on:
     try:
+        zone = RestrictedZone(parse_points(zone_text))
+    except ValueError as e:
+        st.sidebar.error(f"Invalid zone: {e}")
+
+st.sidebar.markdown("---")
+run = st.sidebar.toggle("Start camera")
+test_alert = st.sidebar.button("Send test alert")
+
+st.sidebar.subheader("Recent alerts")
+alerts_box = st.sidebar.empty()
+fps_box = st.sidebar.empty()
+
+frame_box = st.empty()
+
+
+def render_alerts(events):
+    if not events.recent_alerts:
+        alerts_box.caption("No alerts yet.")
+        return
+    lines = [f"**{a['time']}**  {a['type']}  (id {a['id']})"
+             for a in list(events.recent_alerts)[:8]]
+    alerts_box.markdown("\n\n".join(lines))
+
+
+# ---------- Main loop ----------
+events = load_events()
+render_alerts(events)
+
+if run:
+    src = int(source) if source.isdigit() else source
+    detector = load_detector()
+    detector.conf = conf
+    cam = Camera(src)
+    fire_test = test_alert
+    try:
+        prev = time.time()
         while True:
-            success, frame = camera.read()
+            frame = cam.read()
+            if frame is None:
+                continue
 
-            if not success:
-                print("Unable to read camera frame.")
-                break
+            dets = detector.detect(frame)
+            frame = detector.draw(frame, dets)
 
-            # Reduce the processing load
-            frame = cv2.resize(frame, (640, 480))
+            # --- Restricted area monitoring ---
+            if zone:
+                intruders = zone.check(frame, dets)
+                frame = zone.draw(frame, intruders)
+                if intruders:
+                    best = max(d["conf"] for d in intruders)
+                    if events.trigger("restricted_area", frame, best,
+                                      f"{len(intruders)} person(s) in zone"):
+                        render_alerts(events)
 
-            # Detect objects using the CPU
-            results = model.predict(
-                source=frame,
-                imgsz=416,
-                conf=0.40,
-                device="cpu",
-                verbose=False
-            )
+            if fire_test:
+                events.trigger("anomaly", frame, 0.99, "manual test")
+                fire_test = False
+                render_alerts(events)
 
-            output = results[0].plot()
-
-            # Calculate approximate FPS
-            current_time = time.time()
-            elapsed = current_time - previous_time
-            fps = 1 / elapsed if elapsed > 0 else 0
-            previous_time = current_time
-
-            cv2.putText(
-                output,
-                f"FPS: {fps:.1f}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
-
-            cv2.imshow("Smart Surveillance System", output)
-
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-
+            now = time.time()
+            fps_box.metric("FPS", f"{1 / (now - prev):.1f}")
+            prev = now
+            frame_box.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                            channels="RGB", use_container_width=True)
     finally:
-        camera.release()
-        cv2.destroyAllWindows()
-        print("Surveillance system stopped.")
-
-
-if __name__ == "__main__":
-    main()
+        cam.release()
+else:
+    st.info("Turn on 'Start camera' in the sidebar.")
