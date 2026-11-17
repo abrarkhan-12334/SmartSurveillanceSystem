@@ -24,3 +24,11 @@ FALL_ANGLE = 60            # torso angle (degrees from vertical) counted as "lyi
 FALL_ASPECT = 1.2          # fallback: box width/height ratio if body points are hidden
 FALL_HOLD_SECONDS = 1.5    # how long a person must stay down to count as a fall
 FALL_DROP_RATIO = 0.4      # sudden drop = body center falls more than 40% of body height in 1s
+# ---- Weapon detection ----
+WEAPON_MODEL = BASE_DIR / "models" / "weapon.pt"
+WEAPON_CONF = 0.5            # minimum confidence to count a detection
+WEAPON_CONFIRM_FRAMES = 3    # must be seen in this many processed frames in a row
+WEAPON_IMGSZ = 480           # smaller = faster on CPU
+
+# ---- Performance ----
+PROCESS_EVERY_N = 2          # run the heavy detectors on every Nth frame
